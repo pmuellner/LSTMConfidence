@@ -48,23 +48,32 @@ class SyntheticData:
         self.y_test = y_test + np.random.randn(len(y_test)) * self.noise
         self.y_trigger = y_trigger + np.random.randn(len(y_trigger)) * self.noise
 
-        self._add_outlier(size=10, scaling=.8)
+        labels = self._add_outlier(size=10, scaling=.8)
 
-        return self.y_train, self.y_test, self.y_trigger
+
+
+        return self.y_train, self.y_test, self.y_trigger, labels
 
     def _add_outlier(self, size, scaling):
-        outlier = np.random.uniform(low=self.y_trigger.min(), high=self.y_trigger.max(), size=size) * scaling
+        #outlier = np.random.uniform(low=self.y_trigger.min(), high=self.y_trigger.max(), size=size) * scaling
+        outlier = np.random.randn(size) * scaling
         outlier_start_idx = np.random.randint(low=0, high=self.n_test-size)
         outlier_end_idx = outlier_start_idx + size
         self.y_trigger[outlier_start_idx:outlier_end_idx] = outlier
 
+        labels = np.zeros_like(self.y_trigger)
+        labels[outlier_start_idx:outlier_end_idx] = 1
+
+        return labels
+
 
 if __name__ == "__main__":
-    synth_data = SyntheticData(kind="sinus", noise=0.4)
-    train, test, trigger = synth_data.generate(n_periods_train=25, n_periods_test=5, prec=100)
+    synth_data = SyntheticData(kind="sinus", noise=0.2)
+    train, test, trigger, labels = synth_data.generate(n_periods_train=25, n_periods_test=5, prec=100)
     print(len(train), len(test), len(trigger))
     plt.plot(test, label="Test")
     plt.plot(trigger, label="Trigger")
+    plt.plot(labels)
     plt.legend()
     plt.show()
 

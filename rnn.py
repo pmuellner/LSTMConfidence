@@ -5,10 +5,23 @@ from custom_cells.lstm import LSTM
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.neighbors import LocalOutlierFactor
+from sklearn.neighbors import LocalOutlierFactor, KernelDensity
 from collections import defaultdict
+from PyNomaly.loop import LocalOutlierProbability
+from scipy.integrate import quad
+from scipy.special import erf
 
 plt.style.use("seaborn")
+
+def generate_pmf(x, n_bins):
+    counts, bins = np.histogram(x, bins=n_bins)
+    bins = bins[:-1] + (bins[1] - bins[0]) / 2
+    probabilities = counts / np.sum(counts)
+    print(bins)
+
+def scale(x, low, high):
+    return (np.array(x) - low) / (high - low)
+
 
 def mean_of_dictionaries(*args):
     summation = defaultdict(list)
@@ -73,10 +86,12 @@ def train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger):
     components = sess.run([h, c, c_, i, f, o], feed_dict={X: X_trigger, Y: Y_trigger})
     components = [component.T for component in components]
 
+    hypothesis_test = sess.run(preds, feed_dict={X: X_test, Y: Y_test})
+
     tf.reset_default_graph()
     sess.close()
 
-    return components, weights, b
+    return components, weights, b, hypothesis_test
 
 
 if __name__ == "__main__":
@@ -100,21 +115,53 @@ if __name__ == "__main__":
     X_trigger, Y_trigger = create_sequences(data_dict["trigger"], look_back=lb)
 
     list_of_lofs_per_run = []
+    list_of_test_lofs_per_run = []
     for i in range(5):
-        components, weights, b = train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger)
+        components, weights, b, hypothesis_test = train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger)
+        lof = LocalOutlierFactor().fit(hypothesis_test).negative_outlier_factor_ * -1
+        list_of_test_lofs_per_run.append(lof)
+
+
         lofs_dict = {}
-        for name, component in zip(["h", "c", "c_", "i", "f", "o"], components):
-            lof_mat = np.zeros_like(component)
+        names = ["h", "c", "c_", "i", "f", "o", "ifo"]
+        print(components[-1].shape)
+        print(np.dstack((components[-1], components[-2], components[-3])).shape)
+        components.append(np.dstack((components[-1], components[-2], components[-3])))
+
+        for name, component in zip(names, components):
+            lof_mat = np.zeros((component.shape[0], component.shape[1]))
+            print(lof_mat.shape)
             for neuron, values in enumerate(component):
-                lof = LocalOutlierFactor().fit(values.reshape(-1, 1)).negative_outlier_factor_ * -1
+                #lof = LocalOutlierFactor().fit(values.reshape(-1, 1)).negative_outlier_factor_ * -1
+                #lof = LocalOutlierProbability(values).fit().local_outlier_probabilities
+                if name != "ifo":
+                    lof = LocalOutlierFactor().fit(values.reshape(-1, 1)).negative_outlier_factor_ * -1
+                else:
+                    lof = LocalOutlierFactor().fit(values).negative_outlier_factor_ * -1
+
+                #perplexity = .5
+                #confidence = 1 - np.maximum(np.zeros_like(lof), erf((lof - np.mean(lof, axis=0)) / (2 * np.sqrt(2) * perplexity)))
+                """confidence = 1 - np.maximum(np.zeros_like(lof), erf(
+                    (lof - np.mean(lof)) / (np.std(lof) * 2 * np.sqrt(2))))"""
                 lof_mat[neuron] = lof
 
             #overall_lof = np.mean(lof_mat, axis=0).ravel().tolist()
-            overall_lof = lof_mat.T.dot(np.abs(weights)).ravel().tolist()
+            #weights = np.abs(np.log(np.abs(weights)))
+            w = weights / np.sum(np.abs(weights))
+            overall_lof = (lof_mat.T.dot(1 - w)).ravel() / np.sum(1 - w).ravel()
+            perplexity = np.linalg.norm(overall_lof)
+            overall_lof = 1 - np.maximum(np.zeros_like(overall_lof), erf((overall_lof - np.mean(overall_lof)) / (perplexity)))
             lofs_dict[name] = overall_lof
         list_of_lofs_per_run.append(lofs_dict)
 
     results_dict = mean_of_dictionaries(*list_of_lofs_per_run)
+    #mean_test_lof = np.mean(list_of_test_lofs_per_run, axis=0)
+    #std_test_lof = np.std(list_of_test_lofs_per_run)
+
+    #kde = KernelDensity(kernel="exponential", bandwidth=0.5).fit(mean_test_lof.reshape(-1, 1))
+
+    #plt.plot(np.exp(kde.score_samples(results_dict["h"].reshape(-1, 1))))
+    #plt.show()
 
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
@@ -128,6 +175,7 @@ if __name__ == "__main__":
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["c"], linewidth=1)
+    #axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
@@ -137,6 +185,7 @@ if __name__ == "__main__":
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["c_"], linewidth=1)
+    #axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
@@ -146,6 +195,7 @@ if __name__ == "__main__":
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["i"], linewidth=1)
+    #axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
@@ -155,6 +205,7 @@ if __name__ == "__main__":
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["f"], linewidth=1)
+    #axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
@@ -164,11 +215,24 @@ if __name__ == "__main__":
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["o"], linewidth=1)
+    #axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
     plt.suptitle("Output Gates")
     plt.show()
+
+    fig, axes = plt.subplots(2, 1, sharex=True)
+    axes[0].plot(Y_trigger, linewidth=1)
+    axes[1].plot(results_dict["ifo"], linewidth=1)
+    # axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
+    axes[0].set_ylabel("Time Series")
+    axes[1].set_ylabel("Avg. LOF")
+    plt.xlabel("Time " + r"$t$")
+    plt.suptitle("Input/Forget/Output Gates")
+    plt.show()
+
+
 
 
     #exit()
