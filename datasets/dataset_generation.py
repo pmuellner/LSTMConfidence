@@ -77,7 +77,7 @@ if __name__ == "__main__":
     plt.legend()
     plt.show()
 
-    data_dict = {"train": train, "test": test, "trigger": trigger}
+    data_dict = {"train": train, "test": test, "trigger": trigger, "labels": labels}
     with open("sinusoids/data1.pkl", "wb") as f:
         pickle.dump(data_dict, f)
 
