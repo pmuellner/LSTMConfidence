@@ -9,10 +9,13 @@ from sklearn.neighbors import LocalOutlierFactor, KernelDensity
 from collections import defaultdict
 from PyNomaly.loop import LocalOutlierProbability
 from scipy.integrate import quad
-from scipy.special import erf
+from scipy.special import erf, erfinv
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
 from scipy.stats.stats import pearsonr
-from NPEET.npeet.entropy_estimators import mi, kldiv, shuffle_test
+from NPEET.npeet.entropy_estimators import mi, kldiv, shuffle_test, entropy, centropy
+import os
+from sklearn.preprocessing import MinMaxScaler
+from glob import glob
 
 plt.style.use("seaborn")
 
@@ -68,8 +71,10 @@ def get_candidate(look_back):
 
     return c_
 
-def train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger):
-    X = tf.placeholder(dtype=tf.float64, shape=[None, lb, 1])
+def train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, look_back, n_hidden):
+    n_hidden = 10
+
+    X = tf.placeholder(dtype=tf.float64, shape=[None, look_back, 1])
     Y = tf.placeholder(dtype=tf.float64, shape=[None, 1])
 
     network = tf.contrib.rnn.MultiRNNCell([LSTM(num_units=n_hidden, state_is_tuple=True)])
@@ -96,116 +101,106 @@ def train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger):
         test_mse = sess.run(cost, feed_dict={X: X_test, Y: Y_test})
         test_loss.append(test_mse)
 
-    weights, b = sess.run([W, b], feed_dict={X: X_trigger, Y: Y_trigger})
+    weights_trigger = sess.run(W, feed_dict={X: X_trigger, Y: Y_trigger})
+    weights_test = sess.run(W, feed_dict={X: X_test, Y: Y_test})
 
     i, f, o = get_gates(look_back=lb)
     c_ = get_candidate(look_back=lb)
-    components = sess.run([h, c, c_, i, f, o], feed_dict={X: X_trigger, Y: Y_trigger})
-    components = [component.T for component in components]
-
-    H_trigger = sess.run(preds, feed_dict={X: X_trigger, Y: Y_trigger})
-    H_test = sess.run(preds, feed_dict={X: X_test, Y: Y_test})
+    components_trigger = sess.run([h, c, c_, i, f, o], feed_dict={X: X_trigger, Y: Y_trigger})
+    components_trigger = [component.T for component in components_trigger]
+    components_test = sess.run([h, c, c_, i, f, o], feed_dict={X: X_test, Y: Y_test})
+    components_test = [component.T for component in components_test]
 
     tf.reset_default_graph()
     sess.close()
 
-    return components, weights, b, H_trigger, H_test
+    return components_trigger, weights_trigger, components_test, weights_test
 
+def load_datasets(dataset_name):
+    DATASETS_PREFIX = "datasets/"
+    datasets = []
+    for path in glob(DATASETS_PREFIX + dataset_name + "/*/"):
+        data_dict = dict()
+        data_dict["train"] = MinMaxScaler().fit_transform(np.load(path + "train.npy").reshape(-1, 1)).ravel()
+        data_dict["test"] = MinMaxScaler().fit_transform(np.load(path + "test.npy").reshape(-1, 1)).ravel()
+        data_dict["trigger"] = MinMaxScaler().fit_transform(np.load(path + "outl.npy").reshape(-1, 1)).ravel()
+        data_dict["labels"] = np.load(path + "labels.npy")
+        datasets.append(data_dict)
 
-if __name__ == "__main__":
+    if len(datasets) == 0:
+        print("No Datasets found!")
 
-    with open("datasets/sinusoids/data1.pkl", "rb") as f:
-        data_dict = pickle.load(f)
+    return datasets
 
-
-
-    from sklearn.preprocessing import MinMaxScaler
-    data_dict = dict()
-    data_dict["train"] = MinMaxScaler().fit_transform(np.load("datasets/modifiedDatasets/sunspot/data5/train.npy").reshape(-1, 1)).ravel()
-    data_dict["test"] = MinMaxScaler().fit_transform(np.load("datasets/modifiedDatasets/sunspot/data5/test.npy").reshape(-1, 1)).ravel()
-    data_dict["trigger"] = MinMaxScaler().fit_transform(np.load("datasets/modifiedDatasets/sunspot/data5/outl.npy").reshape(-1, 1)).ravel()
-    data_dict["labels"] = np.load("datasets/modifiedDatasets/sunspot/data5/labels.npy")
-
-
-    lb = 5
-    n_hidden = 10
-
-    X_train, Y_train = create_sequences(data_dict["train"], look_back=lb)
-    X_test, Y_test = create_sequences(data_dict["test"], look_back=lb)
-    X_trigger, Y_trigger = create_sequences(data_dict["trigger"], look_back=lb)
-    labels = data_dict["labels"][lb+1:]
-
+def run(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, look_back, n_hidden, verbose=True):
     list_of_lofs_per_run = []
     list_of_test_lofs_per_run = []
     list_of_kls_per_run = []
-    for i in range(15):
-        components, weights, b, hypothesis, hypothesis_test = train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger)
-        #components, weights, b, hypothesis, hypothesis_test = train_and_eval(X_train, Y_train, X_test, Y_test, X_test, Y_test)
-        lof_test = LocalOutlierFactor().fit(hypothesis_test).negative_outlier_factor_ * -1
-        #list_of_test_lofs_per_run.append(lof)
-
+    for i in range(1):
+        components_trigger, weights_trigger, components_test, weights_test \
+            = train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, look_back, n_hidden)
 
         lofs_dict = {}
-        kls_dict = {}
         names = ["h", "c", "c_", "i", "f", "o", "ifo"]
-        components.append(np.dstack((components[-1], components[-2], components[-3])))
+        components_trigger.append(np.dstack((components_trigger[-1], components_trigger[-2], components_trigger[-3])))
+        components_test.append(np.dstack((components_test[-1], components_test[-2], components_test[-3])))
 
-        for name, component in zip(names, components):
-            lof_mat = np.zeros((component.shape[0], component.shape[1]))
-            for neuron, values in enumerate(component):
-                #lof = LocalOutlierProbability(values).fit().local_outlier_probabilities
+        for name, component_trigger, component_test in zip(names, components_trigger, components_test):
+            lof_trigger_mat = np.zeros((component_trigger.shape[0], component_trigger.shape[1]))
+            lof_test_mat = np.zeros((component_test.shape[0], component_test.shape[1]))
+
+            for neuron in range(n_hidden):
+                values_trigger = component_trigger[neuron]
+                values_test = component_test[neuron]
+                # lof = LocalOutlierProbability(values).fit().local_outlier_probabilities
                 if name != "ifo":
-                    lof = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(values.reshape(-1, 1)).negative_outlier_factor_ * -1
+                    lof_trigger = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
+                        values_trigger.reshape(-1, 1)).negative_outlier_factor_ * -1
+                    lof_test = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
+                        values_test.reshape(-1, 1)).negative_outlier_factor_ * -1
                 else:
-                    lof = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(values).negative_outlier_factor_ * -1
+                    lof_trigger = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
+                        values_trigger).negative_outlier_factor_ * -1
+                    lof_test = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
+                        values_test).negative_outlier_factor_ * -1
 
-                lof_mat[neuron] = lof
+                lof_trigger_mat[neuron] = lof_trigger
+                lof_test_mat[neuron] = lof_test
 
-            # TODO test if w or 1/w is better --> later
-            w = np.abs(weights) / np.sum(np.abs(weights))
-            #overall_lof = lof_mat.T.dot(1 - w).ravel()
-            #overall_lof = lof_mat.T.dot(w).ravel()
+            w_trigger = np.abs(weights_trigger) / np.sum(np.abs(weights_trigger))
+            w_test = np.abs(weights_test) / np.sum(np.abs(weights_test))
+            overall_lof_trigger = lof_trigger_mat.T.dot(w_trigger).ravel()
+            overall_lof_test = lof_test_mat.T.dot(w_test).ravel()
 
-            # construct pmf from overal lof
-            #print(KL(np.random.randn(len(overall_lof)), overall_lof))
 
-            overall_lof = np.mean(lof_mat, axis=0)
-            kl = shuffle_test(kldiv, overall_lof.reshape(-1, 1), lof_test.reshape(-1, 1).reshape(-1, 1))[0]
-            kls_dict[name] = kl
+            conservativeness = 0.33
+            scaler = MinMaxScaler(feature_range=(0, erfinv(conservativeness)))
+            x_test = scaler.fit_transform(overall_lof_test.reshape(-1, 1))
+            x_trigger = scaler.transform(overall_lof_trigger.reshape(-1, 1))
 
-            #overall_lof = lof_mat.T.dot(weights)
-            perplexity = 15
-            #overall_lof = 1 - np.maximum(np.zeros_like(overall_lof), erf((overall_lof - np.mean(overall_lof)) / (np.sqrt(2) * np.std(overall_lof) * perplexity)))
-            overall_lof = 1 - np.maximum(np.zeros_like(overall_lof), erf((overall_lof - np.mean(overall_lof)) / (np.sqrt(2) * kl * perplexity)))
-            lofs_dict[name] = overall_lof
+            error_probability = erf((x_trigger - np.mean(x_trigger)))
+            confidence = 1 - error_probability
+            lofs_dict[name] = confidence
         list_of_lofs_per_run.append(lofs_dict)
-        list_of_kls_per_run.append(kls_dict)
 
     results_dict = mean_of_dictionaries(*list_of_lofs_per_run)
-    kl_dict = mean_of_dictionaries(*list_of_kls_per_run)
-    print(kl_dict)
-
-    variances = []
-    n_neighbors = list(np.arange(10, 50, 1))
-    for k in n_neighbors:
-        lof = LocalOutlierFactor(n_neighbors=k, algorithm="brute").fit(np.array(data_dict["test"]).reshape(-1, 1)).negative_outlier_factor_ * -1
-        variances.append(np.var(lof))
-    plt.plot(n_neighbors, variances)
-    plt.show()
 
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
-    axes[1].plot(LocalOutlierFactor().fit(np.array(data_dict["trigger"]).reshape(-1, 1)).negative_outlier_factor_ * -1, linewidth=1)
+    axes[1].plot(LocalOutlierFactor().fit(Y_trigger).negative_outlier_factor_ * -1,
+                 linewidth=1)
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
     plt.suptitle("X")
     plt.show()
 
-    print(evaluate_classification(y_true=labels, y_pred=(results_dict["h"] < 0.5)))
-    print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["h"], Y_trigger.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["h"], hypothesis.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["h"], np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
+    y_eval = evaluate_classification(y_true=labels, y_pred=(LocalOutlierFactor().fit(Y_trigger).negative_outlier_factor_ * -1 > 1.5))
+
+    h_eval = evaluate_classification(y_true=labels, y_pred=(results_dict["h"] < 0.5))
+    # print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["h"], Y_trigger.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["h"], hypothesis.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["h"], np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["h"], linewidth=1)
@@ -215,86 +210,80 @@ if __name__ == "__main__":
     plt.suptitle("Hidden States")
     plt.show()
 
-    print(evaluate_classification(y_true=labels, y_pred=(results_dict["c"] < 0.5)))
-    print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["c"], Y_trigger.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["c"], hypothesis.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["c"],
-                                                                       np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
+    c_eval = evaluate_classification(y_true=labels, y_pred=(results_dict["c"] < 0.5))
+    # print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["c"], Y_trigger.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["c"], hypothesis.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["c"], np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["c"], linewidth=1)
-    #axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
+    # axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
     plt.suptitle("Internal States")
     plt.show()
 
-    print(evaluate_classification(y_true=labels, y_pred=(results_dict["c_"] < 0.5)))
-    print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["c_"], Y_trigger.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["c_"], hypothesis.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["c_"],
-                                                                       np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
+    cand_eval = evaluate_classification(y_true=labels, y_pred=(results_dict["c_"] < 0.5))
+    # print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["c_"], Y_trigger.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["c_"], hypothesis.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["c_"], np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["c_"], linewidth=1)
-    #axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
+    # axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
     plt.suptitle("Candidate States")
     plt.show()
 
-    print(evaluate_classification(y_true=labels, y_pred=(results_dict["i"] < 0.5)))
-    print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["i"], Y_trigger.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["i"], hypothesis.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["i"],
-                                                                       np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
+    i_eval = evaluate_classification(y_true=labels, y_pred=(results_dict["i"] < 0.5))
+    # print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["i"], Y_trigger.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["i"], hypothesis.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["i"],  np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["i"], linewidth=1)
-    #axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
+    # axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
     plt.suptitle("Input Gates")
     plt.show()
 
-    print(evaluate_classification(y_true=labels, y_pred=(results_dict["f"] < 0.5)))
-    print("Mutual Information component-trigger: %f)" % shuffle_test(mi, results_dict["f"], Y_trigger.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["f"], hypothesis.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["f"],
-                                                                       np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
+    f_eval = evaluate_classification(y_true=labels, y_pred=(results_dict["f"] < 0.5))
+    # print("Mutual Information component-trigger: %f)" % shuffle_test(mi, results_dict["f"], Y_trigger.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["f"], hypothesis.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["f"], np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["f"], linewidth=1)
-    #axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
+    # axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
     plt.suptitle("Forget Gates")
     plt.show()
 
-    print(evaluate_classification(y_true=labels, y_pred=(results_dict["o"] < 0.5)))
-    print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["o"], Y_trigger.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["o"], hypothesis.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["o"],
-                                                                       np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
+    o_eval = evaluate_classification(y_true=labels, y_pred=(results_dict["o"] < 0.5))
+    # print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["o"], Y_trigger.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["o"], hypothesis.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["o"],np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["o"], linewidth=1)
-    #axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
+    # axes[1].axhline(y=max_test_lof, linewidth=2, linestyle="--", color="grey")
     axes[0].set_ylabel("Time Series")
     axes[1].set_ylabel("Avg. LOF")
     plt.xlabel("Time " + r"$t$")
     plt.suptitle("Output Gates")
     plt.show()
 
-    print(evaluate_classification(y_true=labels, y_pred=(results_dict["ifo"] < 0.5)))
-    print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["ifo"], Y_trigger.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["ifo"], hypothesis.ravel(), alpha=0.25)[0])
-    print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["ifo"],
-                                                                       np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
+    ifo_eval = evaluate_classification(y_true=labels, y_pred=(results_dict["ifo"] < 0.5))
+    # print("Mutual Information component-trigger: %f" % shuffle_test(mi, results_dict["ifo"], Y_trigger.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-hypothesis: %f" % shuffle_test(mi, results_dict["ifo"], hypothesis.ravel(), alpha=0.25)[0])
+    # print("Mutual Information component-error: %f" % shuffle_test(mi, results_dict["ifo"], np.abs(hypothesis - Y_trigger).ravel(), alpha=0.25)[0])
     fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(results_dict["ifo"], linewidth=1)
@@ -304,3 +293,55 @@ if __name__ == "__main__":
     plt.xlabel("Time " + r"$t$")
     plt.suptitle("Input/Forget/Output Gates")
     plt.show()
+
+    if not verbose:
+        plt.clf()
+
+    return y_eval, h_eval, c_eval, cand_eval, i_eval, f_eval, o_eval, ifo_eval
+
+
+if __name__ == "__main__":
+    lb = 5
+    n_hidden = 10
+    datasets = load_datasets("sunspot")
+
+    y_eval_list, h_eval_list, c_eval_list, cand_eval_list, i_eval_list, f_eval_list, o_eval_list, ifo_eval_list = [], [], [], [], [], [], [], []
+    for dataset in datasets:
+        dataset = datasets[5]
+        X_train, Y_train = create_sequences(dataset["train"], look_back=lb)
+        X_test, Y_test = create_sequences(dataset["test"], look_back=lb)
+        X_trigger, Y_trigger = create_sequences(dataset["trigger"], look_back=lb)
+        labels = dataset["labels"][lb+1:]
+
+        y_eval, h_eval, c_eval, cand_eval, i_eval, f_eval, o_eval, ifo_eval = run(X_train, Y_train,
+                                                                          X_test, Y_test,
+                                                                          X_trigger, Y_trigger,
+                                                                          verbose=False, look_back=lb, n_hidden=n_hidden)
+
+        y_eval_list.append(y_eval)
+        h_eval_list.append(h_eval)
+        c_eval_list.append(c_eval)
+        cand_eval_list.append(cand_eval)
+        i_eval_list.append(i_eval)
+        f_eval_list.append(f_eval)
+        o_eval_list.append(o_eval)
+        ifo_eval_list.append(ifo_eval)
+
+        break
+
+    print("Output y")
+    print(mean_of_dictionaries(*y_eval_list))
+    print("Hidden State h")
+    print(mean_of_dictionaries(*h_eval_list))
+    print("Internal State c")
+    print(mean_of_dictionaries(*c_eval_list))
+    print("Candidate State c_")
+    print(mean_of_dictionaries(*cand_eval_list))
+    print("Input Gate i")
+    print(mean_of_dictionaries(*i_eval_list))
+    print("Forget Gate f")
+    print(mean_of_dictionaries(*f_eval_list))
+    print("Output Gate o")
+    print(mean_of_dictionaries(*o_eval_list))
+    print("Input/Forget/Output Gates ifo")
+    print(mean_of_dictionaries(*ifo_eval_list))
