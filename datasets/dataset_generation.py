@@ -1,7 +1,46 @@
 import numpy as np
-import random
+from utils.other import uniform
 import matplotlib.pyplot as plt
-import pickle
+import random
+import pandas as pd
+import os
+
+class Outlier:
+    def __init__(self, size):
+        self.size = size
+
+    def generate(self, data, constant=False, finetuning=None):
+        data = data.copy()
+
+        if finetuning == None:
+            finetuning = np.ones(shape=(self.size,))
+        else:
+            finetuning = np.asarray(finetuning)
+
+        outlier_start_idx = random.choice([i for i in range(0, len(data) - self.size + 1, self.size)])
+        idxs = [i for i in range(outlier_start_idx, outlier_start_idx + self.size)]
+
+        tuning_param = finetuning
+        sign = random.choice([+1, -1])
+        window = data[outlier_start_idx:outlier_start_idx + self.size]
+        if sign == +1:
+            to_be_added = max(data) - max(window)
+            extremum = np.argmax(window)
+        else:
+            to_be_added = min(window) - min(data)
+            extremum = np.argmin(window)
+
+        if constant:
+            generated_outlier = np.ones(self.size) * data[outlier_start_idx]
+        else:
+            add = np.array(uniform(low=0, high=to_be_added, n=self.size))
+            generated_outlier = np.random.choice(window, self.size, replace=True) + add * sign * tuning_param
+            generated_outlier[extremum] = window[extremum] + to_be_added * sign * tuning_param
+
+        data_with_outliers = np.asarray(data)
+        data_with_outliers[idxs] = generated_outlier
+
+        return data_with_outliers, idxs
 
 class SyntheticData:
     def __init__(self, kind, noise=0.0):
@@ -33,52 +72,37 @@ class SyntheticData:
         x_trigger.sort()
         y_trigger = np.sin(x_trigger)
 
-        """curvature = np.gradient(np.gradient(y_trigger))
-        turning_points = np.argwhere(np.diff(np.sign(curvature)) != 0).ravel().tolist()
-        trigger_start_idx = random.choice(range(len(turning_points[:-1])))
-        trigger_start, trigger_end = turning_points[trigger_start_idx], turning_points[trigger_start_idx+1]
-
-        y_trigger[trigger_start:trigger_end + 1] = np.random.randn(trigger_end+1 - trigger_start) * 0.5
-        if window_size > 0:
-            y_trigger = np.convolve(y_trigger, np.ones(window_size) / window_size, mode="same")"""
-
-
-
         self.y_train = y_train + np.random.randn(len(y_train)) * self.noise
         self.y_test = y_test + np.random.randn(len(y_test)) * self.noise
         self.y_trigger = y_trigger + np.random.randn(len(y_trigger)) * self.noise
 
-        labels = self._add_outlier(size=10, scaling=.8)
-
-
-
-        return self.y_train, self.y_test, self.y_trigger, labels
-
-    def _add_outlier(self, size, scaling):
-        #outlier = np.random.uniform(low=self.y_trigger.min(), high=self.y_trigger.max(), size=size) * scaling
-        outlier = np.random.randn(size) * scaling
-        outlier_start_idx = np.random.randint(low=0, high=self.n_test-size)
-        outlier_end_idx = outlier_start_idx + size
-        self.y_trigger[outlier_start_idx:outlier_end_idx] = outlier
-
-        labels = np.zeros_like(self.y_trigger)
-        labels[outlier_start_idx:outlier_end_idx] = 1
-
-        return labels
+        return self.y_train, self.y_test, self.y_trigger
 
 
 if __name__ == "__main__":
     synth_data = SyntheticData(kind="sinus", noise=0.2)
-    train, test, trigger, labels = synth_data.generate(n_periods_train=25, n_periods_test=5, prec=100)
-    print(len(train), len(test), len(trigger))
-    plt.plot(test, label="Test")
-    plt.plot(trigger, label="Trigger")
-    plt.plot(labels)
-    plt.legend()
-    plt.show()
+    train, test, trigger = synth_data.generate(n_periods_train=25, n_periods_test=5, prec=100)
 
-    data_dict = {"train": train, "test": test, "trigger": trigger, "labels": labels}
-    with open("sinusoids/data1.pkl", "wb") as f:
-        pickle.dump(data_dict, f)
+    #train = pd.read_csv("original_datasets/monthly_sunspots/train.csv", squeeze=True).values
+    #test = pd.read_csv("original_datasets/monthly_sunspots/test.csv", squeeze=True).values
+    #trigger = pd.read_csv("original_datasets/monthly_sunspots/outl.csv", squeeze=True).values
 
+    for i in range(10):
+        outlier = Outlier(size=20)
+        outl_data, outl_idxs = outlier.generate(data=trigger, finetuning=[1], constant=False)
+        labels = np.zeros(len(trigger))
+        labels[outl_idxs] = 1
+
+        path = "sinusoids/data" + str(i) + "/"
+        os.mkdir(path)
+
+        plt.plot(trigger, label="Original")
+        plt.plot(outl_idxs, outl_data[outl_idxs], label="Outlier")
+        plt.legend(loc="upper right")
+        plt.savefig(path + "outliers.png")
+
+        np.save(path + "train.npy", train)
+        np.save(path + "test.npy", test)
+        np.save(path + "outl.npy", trigger)
+        np.save(path + "labels.npy", labels)
 
