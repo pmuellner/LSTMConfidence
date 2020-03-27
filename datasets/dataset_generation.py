@@ -105,4 +105,3 @@ if __name__ == "__main__":
         np.save(path + "test.npy", test)
         np.save(path + "outl.npy", trigger)
         np.save(path + "labels.npy", labels)
-

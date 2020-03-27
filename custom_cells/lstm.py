@@ -50,17 +50,21 @@ class LSTM(tf.nn.rnn_cell.LSTMCell):
         gate_inputs = nn_ops.bias_add(gate_inputs, self._bias)
 
         i, j, f, o = array_ops.split(value=gate_inputs, num_or_size_splits=4, axis=one)
-        input_gate = tf.identity(i, name="input_gate")
-        forget_gate = tf.identity(f, name="forget_gate")
-        output_gate = tf.identity(o, name="output_gate")
-        candidate = tf.identity(j, name="candidate")
-
+        #input_gate = tf.identity(i, name="input_gate")
+        #forget_gate = tf.identity(f, name="forget_gate")
+        #output_gate = tf.identity(o, name="output_gate")
+        #candidate = tf.identity(j, name="candidate")
 
         forget_bias_tensor = constant_op.constant(self._forget_bias, dtype=f.dtype)
         add = math_ops.add
         multiply = math_ops.multiply
         new_c = add(multiply(c, sigmoid(add(f, forget_bias_tensor))), multiply(sigmoid(i), self._activation(j)))
         new_h = multiply(self._activation(new_c), sigmoid(o))
+
+        input_gate = tf.identity(sigmoid(i), name="input_gate")
+        forget_gate = tf.identity(sigmoid(add(f, forget_bias_tensor)), name="forget_gate")
+        output_gate = tf.identity(sigmoid(o), name="output_gate")
+        candidate = tf.identity(self._activation(j), name="candidate")
 
         if self._state_is_tuple:
             new_state = LSTMStateTuple(new_c, new_h)

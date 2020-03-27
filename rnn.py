@@ -102,6 +102,9 @@ def train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, look_
     weights_trigger = sess.run(W, feed_dict={X: X_trigger, Y: Y_trigger})
     weights_test = sess.run(W, feed_dict={X: X_test, Y: Y_test})
 
+    biases_trigger = sess.run(b, feed_dict={X: X_trigger, Y: Y_trigger})
+    biases_test = sess.run(b, feed_dict={X: X_test, Y: Y_test})
+
     i, f, o = get_gates(look_back=lb)
     c_ = get_candidate(look_back=lb)
     components_trigger = sess.run([h, c, c_, i, f, o], feed_dict={X: X_trigger, Y: Y_trigger})
@@ -114,7 +117,7 @@ def train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, look_
     tf.reset_default_graph()
     sess.close()
 
-    return components_trigger, weights_trigger, components_test, weights_test, hypothesis
+    return components_trigger, weights_trigger, biases_trigger, components_test, weights_test, biases_test, hypothesis
 
 def load_datasets(dataset_name):
     DATASETS_PREFIX = "datasets/"
@@ -182,7 +185,7 @@ def get_mi_of_components(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger,
 def run(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, labels, look_back, n_hidden, verbose=True):
     list_of_confidence_per_run = []
     for i in range(5):
-        components_trigger, weights_trigger, components_test, weights_test, hypothesis \
+        components_trigger, weights_trigger, biases_trigger, components_test, weights_test, biases_test, hypothesis \
             = train_and_eval(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, look_back, n_hidden)
 
         confidence_dict = {}
@@ -197,29 +200,39 @@ def run(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, labels, look_bac
             for neuron in range(n_hidden):
                 values_trigger = component_trigger[neuron]
                 values_test = component_test[neuron]
-                # lof = LocalOutlierProbability(values).fit().local_outlier_probabilities
+                #lof = LocalOutlierProbability(values).fit().local_outlier_probabilities
                 if name != "ifo":
                     lof_trigger = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
                         values_trigger.reshape(-1, 1)).negative_outlier_factor_ * -1
                     lof_test = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
                         values_test.reshape(-1, 1)).negative_outlier_factor_ * -1
+                    """lof_trigger = LocalOutlierProbability(values_trigger.reshape(-1, 1), n_neighbors=15).fit().local_outlier_probabilities
+                    lof_test = LocalOutlierProbability(values_test.reshape(-1, 1), n_neighbors=15).fit().local_outlier_probabilities
+                    """
                 else:
                     lof_trigger = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
                         values_trigger).negative_outlier_factor_ * -1
                     lof_test = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
                         values_test).negative_outlier_factor_ * -1
+                    """lof_trigger = LocalOutlierProbability(values_trigger,
+                                                          n_neighbors=15).fit().local_outlier_probabilities
+                    lof_test = LocalOutlierProbability(values_test,
+                                                       n_neighbors=15, ).fit().local_outlier_probabilities
+                    """
 
                 lof_trigger_mat[neuron] = lof_trigger
                 lof_test_mat[neuron] = lof_test
 
             w_trigger = np.abs(weights_trigger) / np.sum(np.abs(weights_trigger))
             w_test = np.abs(weights_test) / np.sum(np.abs(weights_test))
-            overall_lof_trigger = lof_trigger_mat.T.dot(w_trigger).ravel()
-            overall_lof_test = lof_test_mat.T.dot(w_test).ravel()
+            #overall_lof_trigger = lof_trigger_mat.T.dot(w_trigger).ravel()
+            #overall_lof_test = lof_test_mat.T.dot(w_test).ravel()
 
+            overall_lof_trigger = lof_trigger_mat.T.dot(w_trigger) + biases_trigger
+            overall_lof_test = lof_test_mat.T.dot(w_test) + biases_test
 
-            conservativeness = 0.33
-            scaler = MinMaxScaler(feature_range=(0, erfinv(conservativeness)))
+            conservativeness = 0.25
+            scaler = MinMaxScaler(feature_range=(0, erfinv(np.array(conservativeness))))
             x_test = scaler.fit_transform(overall_lof_test.reshape(-1, 1))
             x_trigger = scaler.transform(overall_lof_trigger.reshape(-1, 1))
 
@@ -346,6 +359,26 @@ def run(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, labels, look_bac
     axes[1].set_ylabel("Confidence")
     plt.xlabel("Time " + r"$t$")
     plt.suptitle("Input/Forget/Output Gates")
+    plt.show()
+
+    fig, axes = plt.subplots(8, 1, sharex=True)
+    axes[0].plot(Y_trigger, linewidth=1)
+    axes[0].set_ylabel(r"$X_{trigger}$")
+    axes[1].plot(results_dict["h"], linewidth=1)
+    axes[1].set_ylabel(r"$h$")
+    axes[2].plot(results_dict["c"], linewidth=1)
+    axes[2].set_ylabel(r"$c$")
+    axes[3].plot(results_dict["c_"], linewidth=1)
+    axes[3].set_ylabel(r"$\bar{c}$")
+    axes[4].plot(results_dict["i"], linewidth=1)
+    axes[4].set_ylabel(r"$i$")
+    axes[5].plot(results_dict["f"], linewidth=1)
+    axes[5].set_ylabel(r"$f$")
+    axes[6].plot(results_dict["o"], linewidth=1)
+    axes[6].set_ylabel(r"$o$")
+    axes[7].plot(results_dict["ifo"], linewidth=1)
+    axes[7].set_ylabel(r"$[ifo]$")
+    plt.xlabel("Time " + r"$t$")
     plt.show()
 
     return y_eval, h_eval, c_eval, cand_eval, i_eval, f_eval, o_eval, ifo_eval
