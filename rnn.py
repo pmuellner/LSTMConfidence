@@ -193,6 +193,7 @@ def run(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, labels, look_bac
         components_trigger.append(np.dstack((components_trigger[-1], components_trigger[-2], components_trigger[-3])))
         components_test.append(np.dstack((components_test[-1], components_test[-2], components_test[-3])))
 
+
         for name, component_trigger, component_test in zip(names, components_trigger, components_test):
             lof_trigger_mat = np.zeros((component_trigger.shape[0], component_trigger.shape[1]))
             lof_test_mat = np.zeros((component_test.shape[0], component_test.shape[1]))
@@ -201,19 +202,27 @@ def run(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, labels, look_bac
                 values_trigger = component_trigger[neuron]
                 values_test = component_test[neuron]
                 #lof = LocalOutlierProbability(values).fit().local_outlier_probabilities
+
+                if name in ["f", "i", "o", "ifo"]:
+                    activation = sigmoid
+                elif name in ["c_"]:
+                    activation = np.tanh
+                else:
+                    activation = lambda x: x
+
                 if name != "ifo":
                     lof_trigger = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
-                        values_trigger.reshape(-1, 1)).negative_outlier_factor_ * -1
+                        activation(values_trigger).reshape(-1, 1)).negative_outlier_factor_ * -1
                     lof_test = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
-                        values_test.reshape(-1, 1)).negative_outlier_factor_ * -1
+                        activation(values_test).reshape(-1, 1)).negative_outlier_factor_ * -1
                     """lof_trigger = LocalOutlierProbability(values_trigger.reshape(-1, 1), n_neighbors=15).fit().local_outlier_probabilities
                     lof_test = LocalOutlierProbability(values_test.reshape(-1, 1), n_neighbors=15).fit().local_outlier_probabilities
                     """
                 else:
                     lof_trigger = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
-                        values_trigger).negative_outlier_factor_ * -1
+                        activation(values_trigger)).negative_outlier_factor_ * -1
                     lof_test = LocalOutlierFactor(n_neighbors=15, algorithm="brute").fit(
-                        values_test).negative_outlier_factor_ * -1
+                        activation(values_test)).negative_outlier_factor_ * -1
                     """lof_trigger = LocalOutlierProbability(values_trigger,
                                                           n_neighbors=15).fit().local_outlier_probabilities
                     lof_test = LocalOutlierProbability(values_test,
@@ -243,7 +252,7 @@ def run(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, labels, look_bac
 
     results_dict = mean_of_dictionaries(*list_of_confidence_per_run)
 
-    fig, axes = plt.subplots(2, 1, sharex=True)
+    """fig, axes = plt.subplots(2, 1, sharex=True)
     axes[0].plot(Y_trigger, linewidth=1)
     axes[1].plot(np.abs(Y_trigger - hypothesis),
                  linewidth=1)
@@ -359,26 +368,33 @@ def run(X_train, Y_train, X_test, Y_test, X_trigger, Y_trigger, labels, look_bac
     axes[1].set_ylabel("Confidence")
     plt.xlabel("Time " + r"$t$")
     plt.suptitle("Input/Forget/Output Gates")
+    plt.show()"""
+
+    fig, axes = plt.subplots(2, 1, sharex=True)
+    cbar_ax = fig.add_axes([.91, .10, .03, .4])
+    axes[0].plot(Y_trigger, linewidth=1)
+    heatmap = np.zeros((7, len(Y_trigger)))
+    heatmap[0] = np.array(results_dict["h"]).ravel()
+    heatmap[1] = np.array(results_dict["c"]).ravel()
+    heatmap[2] = np.array(results_dict["c_"]).ravel()
+    heatmap[3] = np.array(results_dict["i"]).ravel()
+    heatmap[4] = np.array(results_dict["f"]).ravel()
+    heatmap[5] = np.array(results_dict["o"]).ravel()
+    heatmap[6] = np.array(results_dict["ifo"]).ravel()
+    sns.heatmap(heatmap, ax=axes[1], cmap="Reds_r", vmin=0, vmax=1, cbar=True, cbar_ax=cbar_ax)
+    axes[1].set_yticklabels([r"$h$", r"$c$", r"$\bar{c}$", r"$i$", r"$f$", r"$o$", r"$[ifo]$"], rotation=0)
     plt.show()
 
-    fig, axes = plt.subplots(8, 1, sharex=True)
-    axes[0].plot(Y_trigger, linewidth=1)
-    axes[0].set_ylabel(r"$X_{trigger}$")
-    axes[1].plot(results_dict["h"], linewidth=1)
-    axes[1].set_ylabel(r"$h$")
-    axes[2].plot(results_dict["c"], linewidth=1)
-    axes[2].set_ylabel(r"$c$")
-    axes[3].plot(results_dict["c_"], linewidth=1)
-    axes[3].set_ylabel(r"$\bar{c}$")
-    axes[4].plot(results_dict["i"], linewidth=1)
-    axes[4].set_ylabel(r"$i$")
-    axes[5].plot(results_dict["f"], linewidth=1)
-    axes[5].set_ylabel(r"$f$")
-    axes[6].plot(results_dict["o"], linewidth=1)
-    axes[6].set_ylabel(r"$o$")
-    axes[7].plot(results_dict["ifo"], linewidth=1)
-    axes[7].set_ylabel(r"$[ifo]$")
-    plt.xlabel("Time " + r"$t$")
+    plt.figure(figsize=(6, 3))
+    sns.heatmap(np.array(results_dict["ifo"]).reshape(1, -1), cbar=True, vmin=0, vmax=1, cmap="Reds_r", alpha=1, cbar_kws={'label': 'confidence'})
+    plt.ylim([0, 1])
+    plt.yticks([])
+    plt.xticklabels(rotation=0)
+    plt.plot(Y_trigger, linewidth=1)
+    plt.xticklabels(rotation=0)
+    plt.xlabel(r"time $t$")
+    plt.title(r"$[ifo]$")
+    plt.tight_layout()
     plt.show()
 
     return y_eval, h_eval, c_eval, cand_eval, i_eval, f_eval, o_eval, ifo_eval
