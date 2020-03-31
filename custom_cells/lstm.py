@@ -50,10 +50,6 @@ class LSTM(tf.nn.rnn_cell.LSTMCell):
         gate_inputs = nn_ops.bias_add(gate_inputs, self._bias)
 
         i, j, f, o = array_ops.split(value=gate_inputs, num_or_size_splits=4, axis=one)
-        #input_gate = tf.identity(i, name="input_gate")
-        #forget_gate = tf.identity(f, name="forget_gate")
-        #output_gate = tf.identity(o, name="output_gate")
-        #candidate = tf.identity(j, name="candidate")
 
         forget_bias_tensor = constant_op.constant(self._forget_bias, dtype=f.dtype)
         add = math_ops.add
